@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flashcosyvoice"
+version = "0.0.1"
+authors = [{ name = "Xingchen Song" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+description = "a lightweight CosyVoice vllm-implementation built from scratch"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.4.0",
+    "triton>=3.0.0",
+    "transformers>=4.51.0",  # text tokenizer
+    "s3tokenizer",           # audio tokenizer
+    "diffusers",             # flow-matching
+    "flash-attn",            # nano-vllm
+    "nvidia-ml-py",          # nano-vllm
+    "xxhash",                # nano-vllm
+]
+
+[project.urls]
+Homepage="https://github.com/xingchensong/flashcosyvoice"
+
+[tool.setuptools]
+packages = ["flashcosyvoice"]
