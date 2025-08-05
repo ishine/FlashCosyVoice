@@ -13,6 +13,7 @@
 # limitations under the License.
 import torch
 from torch import nn
+from transformers import AutoConfig
 
 from flashcosyvoice.config import CosyVoice2LLMConfig
 from flashcosyvoice.modules.qwen2_components.layers import (
@@ -63,14 +64,20 @@ class Qwen2ForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: CosyVoice2LLMConfig
+        config: CosyVoice2LLMConfig | AutoConfig
     ):
         super().__init__()
         self.model = Qwen2Model(config)
-        self.lm_head = ParallelLMHead(config.speech_vocab_size, config.hidden_size, bias=config.lm_head_bias)
+        if hasattr(config, "speech_vocab_size"):
+            self.lm_head = ParallelLMHead(config.speech_vocab_size, config.hidden_size, bias=getattr(config, "lm_head_bias", True))
+            self.model_type = "speech_llm"
+        else:
+            self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size, bias=False)
+            self.model_type = "text_llm"
         self.tie_word_embeddings = config.tie_word_embeddings
         if self.tie_word_embeddings:
-            assert config.vocab_size == config.speech_vocab_size, "vocab_size and speech_vocab_size must be the same when tie_word_embeddings is True"
+            if self.model_type == "speech_llm":
+                assert config.vocab_size == config.speech_vocab_size, "vocab_size and speech_vocab_size must be the same when tie_word_embeddings is True"
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
 
     def forward(
