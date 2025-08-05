@@ -125,9 +125,9 @@ class Attention(nn.Module):
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         context = get_context()
-        k_cache = self.k_cache
-        v_cache = self.v_cache
-        store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
+        k_cache, v_cache = self.k_cache, self.v_cache
+        if k_cache.numel() and v_cache.numel():
+            store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
         if context.is_prefill:
             if context.block_tables is not None:    # prefix cache
                 k, v = k_cache, v_cache
@@ -424,12 +424,9 @@ class RotaryEmbedding(nn.Module):
     ) -> None:
         super().__init__()
         self.head_size = head_size
-        self.rotary_dim = rotary_dim
         assert rotary_dim == head_size
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        inv_freq = 1.0 / (base**(torch.arange(0, self.rotary_dim, 2, dtype=torch.float) / self.rotary_dim))
-        t = torch.arange(self.max_position_embeddings, dtype=torch.float)
+        inv_freq = 1.0 / (base**(torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
+        t = torch.arange(max_position_embeddings, dtype=torch.float)
         freqs = torch.einsum("i,j -> ij", t, inv_freq)
         cos = freqs.cos()
         sin = freqs.sin()
@@ -579,10 +576,10 @@ class Qwen2DecoderLayer(nn.Module):
             num_kv_heads=config.num_key_value_heads,
             max_position=config.max_position_embeddings,
             rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=config.qkv_bias,
-            head_dim=config.head_dim,
-            rope_theta=config.rope_theta,
-            rope_scaling=config.rope_scaling,
+            qkv_bias=getattr(config, "qkv_bias", True),
+            head_dim=getattr(config, "head_dim", None),
+            rope_theta=getattr(config, "rope_theta", 1000000.0),
+            rope_scaling=getattr(config, "rope_scaling", None),
         )
         self.mlp = Qwen2MLP(
             hidden_size=config.hidden_size,

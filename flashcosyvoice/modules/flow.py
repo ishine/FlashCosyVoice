@@ -34,8 +34,6 @@ class CausalConditionalCFM(torch.nn.Module):
         in_channels = in_channels + (spk_emb_dim if n_spks > 0 else 0)
         # Just change the architecture of the estimator here
         self.estimator = CausalConditionalDecoder() if estimator is None else estimator
-        # set_all_random_seed(0)
-        self.rand_noise = torch.randn([1, 80, 50 * 300])
 
     @torch.inference_mode()
     def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, streaming=False):
@@ -56,8 +54,7 @@ class CausalConditionalCFM(torch.nn.Module):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-
-        z = self.rand_noise[:, :, :mu.size(2)].to(mu.device).to(mu.dtype) * temperature
+        z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
         # fix prompt and overlap part mu and z
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':
@@ -79,36 +76,43 @@ class CausalConditionalCFM(torch.nn.Module):
                 shape: (batch_size, spk_emb_dim)
             cond: Not used but kept for future purposes
         """
+        batch_size = x.size(0)
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
-        t = t.unsqueeze(dim=0)
 
         # I am storing this because I can later plot it by putting a debugger here and saving it to a file
         # Or in future might add like a return_all_steps flag
         sol = []
 
         # Do not use concat, it may cause memory format changed and trt infer with wrong results!
-        x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
-        mu_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
-        spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
-        cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        # Create tensors with double batch size for CFG (conditional + unconditional)
+        x_in = torch.zeros([batch_size * 2, x.size(1), x.size(2)], device=x.device, dtype=x.dtype)
+        mask_in = torch.zeros([batch_size * 2, mask.size(1), mask.size(2)], device=x.device, dtype=x.dtype)
+        mu_in = torch.zeros([batch_size * 2, mu.size(1), mu.size(2)], device=x.device, dtype=x.dtype)
+        t_in = torch.zeros([batch_size * 2], device=x.device, dtype=x.dtype)
+        spks_in = torch.zeros([batch_size * 2, spks.size(1)], device=x.device, dtype=x.dtype)
+        cond_in = torch.zeros([batch_size * 2, cond.size(1), cond.size(2)], device=x.device, dtype=x.dtype)
+
         for step in range(1, len(t_span)):
             # Classifier-Free Guidance inference introduced in VoiceBox
-            x_in[:] = x
-            mask_in[:] = mask
-            mu_in[0] = mu
-            t_in[:] = t.unsqueeze(0)
-            spks_in[0] = spks
-            cond_in[0] = cond
-            dphi_dt = self.forward_estimator(
+            # Copy conditional and unconditional input
+            x_in[:batch_size] = x
+            x_in[batch_size:] = x
+            mask_in[:batch_size] = mask
+            mask_in[batch_size:] = mask
+            mu_in[:batch_size] = mu
+            # Unconditional part remains 0
+            t_in.fill_(t)
+            spks_in[:batch_size] = spks
+            cond_in[:batch_size] = cond
+
+            dphi_dt = self.estimator(
                 x_in, mask_in,
                 mu_in, t_in,
                 spks_in,
                 cond_in,
                 streaming
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
+            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [batch_size, batch_size], dim=0)
             dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
             x = x + dt * dphi_dt
             t = t + dt
@@ -117,33 +121,6 @@ class CausalConditionalCFM(torch.nn.Module):
                 dt = t_span[step + 1] - t
 
         return sol[-1].float()
-
-    def forward_estimator(self, x, mask, mu, t, spks, cond, streaming=False):
-        if isinstance(self.estimator, torch.nn.Module):
-            return self.estimator(x, mask, mu, t, spks, cond, streaming=streaming)
-        else:
-            [estimator, stream], trt_engine = self.estimator.acquire_estimator()
-            with stream:
-                estimator.set_input_shape('x', (2, 80, x.size(2)))
-                estimator.set_input_shape('mask', (2, 1, x.size(2)))
-                estimator.set_input_shape('mu', (2, 80, x.size(2)))
-                estimator.set_input_shape('t', (2,))
-                estimator.set_input_shape('spks', (2, 80))
-                estimator.set_input_shape('cond', (2, 80, x.size(2)))
-                data_ptrs = [x.contiguous().data_ptr(),
-                             mask.contiguous().data_ptr(),
-                             mu.contiguous().data_ptr(),
-                             t.contiguous().data_ptr(),
-                             spks.contiguous().data_ptr(),
-                             cond.contiguous().data_ptr(),
-                             x.data_ptr()]
-                for i, j in enumerate(data_ptrs):
-                    estimator.set_tensor_address(trt_engine.get_tensor_name(i), j)
-                # run trt engine
-                assert estimator.execute_async_v3(torch.cuda.current_stream().cuda_stream) is True
-                torch.cuda.current_stream().synchronize()
-            self.estimator.release_estimator(estimator, stream)
-            return x
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):
@@ -178,20 +155,16 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
     def forward(self,
                 token,
                 token_len,
-                prompt_token,
-                prompt_token_len,
                 prompt_feat,
                 prompt_feat_len,
                 embedding,
                 streaming,
                 finalize):
-        assert token.shape[0] == 1
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
-        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
         mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
@@ -201,15 +174,16 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         else:
             token, context = token[:, :-self.pre_lookahead_len], token[:, -self.pre_lookahead_len:]
             h, h_lengths = self.encoder(token, token_len, context=context, streaming=streaming)
-        mel_len1, mel_len2 = prompt_feat.shape[1], h.shape[1] - prompt_feat.shape[1]
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
-        conds[:, :mel_len1] = prompt_feat
+        conds = torch.zeros_like(h, device=token.device)
+        for i, j in enumerate(prompt_feat_len):
+            conds[i, :j] = prompt_feat[i, :j]
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        h_lengths = h_lengths.sum(dim=-1).squeeze(dim=1)
+        mask = (~make_pad_mask(h_lengths)).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
@@ -217,7 +191,5 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cond=conds,
             n_timesteps=10,
             streaming=streaming
-        )
-        feat = feat[:, :, mel_len1:]
-        assert feat.shape[2] == mel_len2
-        return feat.float(), None
+        )  # [B, num_mels, T]
+        return feat.float(), h_lengths

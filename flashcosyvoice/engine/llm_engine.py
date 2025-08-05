@@ -28,8 +28,30 @@ class LLMEngine:
             self.ps.append(process)
             self.events.append(event)
         self.model_runner = ModelRunner(config, 0, self.events)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
-        config.eos = self.tokenizer.eos_token_id
+        if hasattr(config.hf_config, "speech_vocab_size"):
+            # NOTE: non-chat model, all these special tokens keep randomly initialized.
+            special_tokens = {
+                'eos_token': '<|endoftext|>',
+                'pad_token': '<|endoftext|>',
+                'additional_special_tokens': [
+                    '<|im_start|>', '<|im_end|>', '<|endofprompt|>',
+                    '[breath]', '<strong>', '</strong>', '[noise]',
+                    '[laughter]', '[cough]', '[clucking]', '[accent]',
+                    '[quick_breath]',
+                    "<laughter>", "</laughter>",
+                    "[hissing]", "[sigh]", "[vocalized-noise]",
+                    "[lipsmack]", "[mn]"
+                ]
+            }
+            self.tokenizer = AutoTokenizer.from_pretrained(f"{config.model}/CosyVoice-BlankEN")
+            self.tokenizer.add_special_tokens(special_tokens)
+            self.skip_special_tokens = True
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
+        if hasattr(config.hf_config, "eos_token_id"):
+            config.eos = config.hf_config.eos_token_id
+        else:
+            config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
         atexit.register(self.exit)
 

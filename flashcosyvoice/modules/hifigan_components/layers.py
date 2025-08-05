@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import Conv1d
 from torch.nn.utils import remove_weight_norm
-from math import sin
 import numpy as np
 from torch.distributions.uniform import Uniform
 from typing import List
@@ -82,7 +81,7 @@ class Snake(nn.Module):
         alpha = self.alpha.unsqueeze(0).unsqueeze(-1)  # line up with x to [B, C, T]
         if self.alpha_logscale:
             alpha = torch.exp(alpha)
-        x = x + (1.0 / (alpha + self.no_div_by_zero)) * pow(sin(x * alpha), 2)
+        x = x + (1.0 / (alpha + self.no_div_by_zero)) * torch.pow(torch.sin(x * alpha), 2)
 
         return x
 
