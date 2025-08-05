@@ -65,7 +65,13 @@ class Scheduler:
     def postprocess(self, seqs: list[Sequence], token_ids: list[int]) -> list[bool]:
         for seq, token_id in zip(seqs, token_ids):
             seq.append_token(token_id)
-            if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+            # Check if the sequence has reached the maximum number of tokens
+            reached_max_tokens = seq.num_completion_tokens == seq.max_tokens
+            # Check if the sequence has reached EOS and has generated enough tokens (satisfying min_tokens requirements)
+            eos_with_min_tokens = (not seq.ignore_eos and token_id == self.eos and
+                                   seq.num_completion_tokens >= seq.min_tokens)
+
+            if reached_max_tokens or eos_with_min_tokens:
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
