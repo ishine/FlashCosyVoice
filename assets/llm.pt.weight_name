@@ -1,3 +1,4 @@
+total_params (llm): 641.938468M
 weights in llm.pt
 
 llm_embedding.weight
