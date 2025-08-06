@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-import torch.utils.data
 from librosa.filters import mel as librosa_mel_fn
 from scipy.io.wavfile import read
 
@@ -44,11 +43,6 @@ hann_window = {}
 
 def mel_spectrogram(y, n_fft=1920, num_mels=80, sampling_rate=24000, hop_size=480,
                     win_size=1920, fmin=0, fmax=8000, center=False):
-    if torch.min(y) < -1.0:
-        print("min value is ", torch.min(y))
-    if torch.max(y) > 1.0:
-        print("max value is ", torch.max(y))
-
     global mel_basis, hann_window  # pylint: disable=global-statement
     if f"{str(fmax)}_{str(y.device)}" not in mel_basis:
         mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
