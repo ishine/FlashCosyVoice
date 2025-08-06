@@ -29,6 +29,11 @@ class Sequence:
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
         self.top_k = sampling_params.top_k
+        # RasSampler parameters
+        self.use_ras = sampling_params.use_ras
+        self.win_size = sampling_params.win_size
+        self.tau_r = sampling_params.tau_r
+        self.top_p = sampling_params.top_p
 
     def __len__(self):
         return self.num_tokens

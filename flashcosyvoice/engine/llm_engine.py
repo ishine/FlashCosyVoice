@@ -27,7 +27,6 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.model_runner = ModelRunner(config, 0, self.events)
         if hasattr(config.hf_config, "speech_vocab_size"):
             # NOTE: non-chat model, all these special tokens keep randomly initialized.
             special_tokens = {
@@ -52,6 +51,7 @@ class LLMEngine:
             config.eos = config.hf_config.eos_token_id
         else:
             config.eos = self.tokenizer.eos_token_id
+        self.model_runner = ModelRunner(config, 0, self.events)
         self.scheduler = Scheduler(config)
         atexit.register(self.exit)
 

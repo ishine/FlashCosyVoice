@@ -45,7 +45,7 @@ class CosyVoice2(torch.nn.Module):
         prompt_text_tokens_for_llm: list[list[int]], text_tokens_for_llm: list[list[int]],
         prompt_mels_for_flow: torch.Tensor, prompt_mels_lens_for_flow: torch.Tensor,
         spk_emb_for_flow: torch.Tensor,
-        sampling_params: SamplingParams | list[SamplingParams] = None,
+        sampling_params: SamplingParams | list[SamplingParams],
     ):
         timing_stats = {}
 
@@ -72,7 +72,7 @@ class CosyVoice2(torch.nn.Module):
 
         # LLM generation
         start_time = time.time()
-        llm_outputs = self.llm.generate(inputs, self.config.sampling_params if sampling_params is None else sampling_params)
+        llm_outputs = self.llm.generate(inputs, sampling_params)
         timing_stats['llm_generation'] = time.time() - start_time
 
         # Prepare Flow inputs

@@ -7,7 +7,7 @@ from multiprocessing.shared_memory import SharedMemory
 from flashcosyvoice.config import Config
 from flashcosyvoice.engine.sequence import Sequence
 from flashcosyvoice.modules.qwen2 import Qwen2ForCausalLM
-from flashcosyvoice.modules.sampler import Sampler
+from flashcosyvoice.modules.sampler import Sampler, RasSampler
 from flashcosyvoice.utils.context import set_context, get_context, reset_context
 from flashcosyvoice.utils.loader import load_model
 
@@ -31,6 +31,7 @@ class ModelRunner:
         self.model = Qwen2ForCausalLM(hf_config)
         load_model(self.model, config.model, hf_config)
         self.sampler = Sampler()
+        self.ras_sampler = RasSampler()
         self.warmup_model()
         self.allocate_kv_cache()
         if not self.enforce_eager:
@@ -182,12 +183,40 @@ class ModelRunner:
     def prepare_sample(self, seqs: list[Sequence]):
         temperatures = []
         top_ks = []
+        win_sizes = []
+        tau_rs = []
+        top_ps = []
+        min_tokens_list = []
+        use_ras_list = []
+
         for seq in seqs:
             temperatures.append(seq.temperature)
             top_ks.append(seq.top_k)
-        temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        return temperatures, top_ks
+            win_sizes.append(seq.win_size)
+            tau_rs.append(seq.tau_r)
+            top_ps.append(seq.top_p)
+            min_tokens_list.append(seq.min_tokens)
+            use_ras_list.append(seq.use_ras)
+
+        temperatures_tensor = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
+        # check all items equal
+        assert all(item == temperatures[0] for item in temperatures)
+        assert all(item == top_ks[0] for item in top_ks)
+        assert all(item == win_sizes[0] for item in win_sizes)
+        assert all(item == tau_rs[0] for item in tau_rs)
+        assert all(item == top_ps[0] for item in top_ps)
+        assert all(item == use_ras_list[0] for item in use_ras_list)
+
+        return {
+            'temperatures': temperatures_tensor,
+            'top_k': top_ks[0],
+            'win_size': win_sizes[0],
+            'tau_r': tau_rs[0],
+            'top_p': top_ps[0],
+            'eos_token': self.config.eos,
+            'min_tokens': min_tokens_list,
+            'use_ras': use_ras_list[0]
+        }
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
@@ -212,9 +241,26 @@ class ModelRunner:
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         if self.rank == 0:
-            temperatures, top_ks = self.prepare_sample(seqs)
+            sample_params = self.prepare_sample(seqs)
             logits = self.run_model(input_ids, positions, is_prefill)
-            token_ids = self.sampler(logits, temperatures, top_ks).tolist()
+
+            if sample_params['use_ras']:
+                # Prepare decoded tokens list for RasSampler
+                decoded_tokens_list = [seq.completion_token_ids for seq in seqs]
+                # Pass all parameters as lists to RasSampler
+                token_ids = self.ras_sampler(
+                    logits,
+                    decoded_tokens_list,
+                    win_size=sample_params['win_size'],
+                    tau_r=sample_params['tau_r'],
+                    top_p=sample_params['top_p'],
+                    top_k=sample_params['top_k'],
+                    eos_token=sample_params['eos_token'],
+                    min_tokens=sample_params['min_tokens']
+                ).tolist()
+            else:
+                # Use the default sampler with list form of top_ks
+                token_ids = self.sampler(logits, sample_params['temperatures'], sample_params['top_k']).tolist()
         else:
             logits = self.run_model(input_ids, positions, is_prefill)
             token_ids = None

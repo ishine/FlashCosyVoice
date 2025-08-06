@@ -44,6 +44,11 @@ class SamplingParams:
     max_tokens: int = 64
     ignore_eos: bool = False
     top_k: int = 25
+    # RasSampler parameters
+    use_ras: bool = False
+    win_size: int = 10
+    tau_r: float = 0.1
+    top_p: float = 0.8
 
 
 @dataclass
@@ -59,13 +64,11 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
-    sampling_params: SamplingParams = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
-        self.sampling_params = SamplingParams() if self.sampling_params is None else self.sampling_params
 
         max_pos = getattr(self.hf_config, "max_position_embeddings", 4096)
         self.max_model_len = min(self.max_model_len, max_pos)
