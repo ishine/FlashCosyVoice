@@ -151,8 +151,9 @@ class VocabParallelEmbedding(nn.Module):
         embedding_dim: int,
     ):
         super().__init__()
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        # TODO(xcsong): support tp > 1
+        self.tp_rank = 0  # dist.get_rank()
+        self.tp_size = 1  # dist.get_world_size()
         assert num_embeddings % self.tp_size == 0
         self.num_embeddings = num_embeddings
         self.num_embeddings_per_partition = self.num_embeddings // self.tp_size
@@ -226,8 +227,9 @@ class LinearBase(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.tp_dim = tp_dim
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        # TODO(xcsong): support tp > 1
+        self.tp_rank = 0  # dist.get_rank()
+        self.tp_size = 1  # dist.get_world_size()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -333,7 +335,8 @@ class QKVParallelLinear(ColumnParallelLinear):
         if total_num_kv_heads is None:
             total_num_kv_heads = total_num_heads
         self.total_num_kv_heads = total_num_kv_heads
-        tp_size = dist.get_world_size()
+        # TODO(xcsong): support tp > 1
+        tp_size = 1  # dist.get_world_size()
         self.num_heads = divide(self.total_num_heads, tp_size)
         self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
         input_size = self.hidden_size
@@ -482,7 +485,8 @@ class Qwen2Attention(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = dist.get_world_size()
+        # TODO(xcsong): support tp > 1
+        tp_size = 1  # dist.get_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size

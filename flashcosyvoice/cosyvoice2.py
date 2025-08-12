@@ -14,6 +14,7 @@
 import torch
 import time
 import s3tokenizer
+from tqdm import tqdm
 
 from flashcosyvoice.config import Config, SamplingParams
 from flashcosyvoice.engine.llm_engine import LLMEngine
@@ -29,6 +30,8 @@ class CosyVoice2(torch.nn.Module):
         self.audio_tokenizer = s3tokenizer.load_model("speech_tokenizer_v2_25hz").cuda().eval()
 
         self.llm = LLMEngine(**self.config.__dict__)
+
+        self.use_tqdm = torch.distributed.get_node_local_rank() == 0
 
         self.flow = CausalMaskedDiffWithXvec()
         self.flow.load_state_dict(torch.load(f"{self.config.model}/flow.pt", map_location="cpu"), strict=True)
@@ -46,6 +49,9 @@ class CosyVoice2(torch.nn.Module):
         prompt_mels_for_flow: torch.Tensor, prompt_mels_lens_for_flow: torch.Tensor,
         spk_emb_for_flow: torch.Tensor,
         sampling_params: SamplingParams | list[SamplingParams],
+        batch_size_flow: int,
+        only_llm: bool,
+        **kwargs,  # for compatibility
     ):
         timing_stats = {}
 
@@ -72,8 +78,15 @@ class CosyVoice2(torch.nn.Module):
 
         # LLM generation
         start_time = time.time()
-        llm_outputs = self.llm.generate(inputs, sampling_params)
+        llm_outputs = self.llm.generate(inputs, sampling_params, use_tqdm=self.use_tqdm)
         timing_stats['llm_generation'] = time.time() - start_time
+
+        results_dict = {
+            "prompt_speech_tokens": valid_prompt_speech_tokens,
+            "generated_speech_tokens": [o['token_ids'][:-1] for o in llm_outputs],
+        }
+        if only_llm:
+            return results_dict, timing_stats
 
         # Prepare Flow inputs
         start_time = time.time()
@@ -88,25 +101,54 @@ class CosyVoice2(torch.nn.Module):
         flow_inputs_lens = torch.tensor(flow_inputs_lens)
         timing_stats['prepare_flow_inputs'] = time.time() - start_time
 
-        # Flow generation
-        start_time = time.time()
-        generated_mels, generated_mels_lens = self.flow(
-            flow_inputs.cuda(), flow_inputs_lens.cuda(),
-            prompt_mels_for_flow.cuda(), prompt_mels_lens_for_flow.cuda(), spk_emb_for_flow.cuda(),
-            streaming=False, finalize=True
-        )
-        timing_stats['flow_generation'] = time.time() - start_time
-
-        # HiFi-GAN generation
-        start_time = time.time()
+        # Flow generation and HiFi-GAN generation (with batching)
+        total_batch_size = flow_inputs.shape[0]
         generated_wavs = []
-        for i in range(batch_size):
-            mel = generated_mels[i, :, prompt_mels_lens_for_flow[i].item():generated_mels_lens[i].item()].unsqueeze(0)
-            wav, _ = self.hift(speech_feat=mel)
-            generated_wavs.append(wav)
-        timing_stats['hifigan_generation'] = time.time() - start_time
+        flow_total_time = 0.0
+        hifigan_total_time = 0.0
 
-        # Calculate total time
-        timing_stats['total'] = sum(timing_stats.values())
+        # Process in batches according to batch_size_flow, batch_size_flow <= total_batch_size
+        # NOTE(xcsong): When executing both LLM and Flow on the same GPU,
+        #   Flow can easily fill up the SM and memory. Therefore, batch processing is required to avoid OOM.
+        num_batches = (total_batch_size + batch_size_flow - 1) // batch_size_flow
+        batch_iterator = range(0, total_batch_size, batch_size_flow)
+        if self.use_tqdm:
+            batch_iterator = tqdm(batch_iterator, desc="Generating wavs (Flow+HiFi-GAN)", leave=False, unit="batch",
+                                  total=num_batches, dynamic_ncols=True, position=self.config.rank + 1)
 
-        return generated_wavs, timing_stats
+        for start_idx in batch_iterator:
+            end_idx = min(start_idx + batch_size_flow, total_batch_size)
+            batch_flow_inputs = flow_inputs[start_idx:end_idx]
+            batch_flow_inputs_lens = flow_inputs_lens[start_idx:end_idx]
+            batch_prompt_mels = prompt_mels_for_flow[start_idx:end_idx]
+            batch_prompt_mels_lens = prompt_mels_lens_for_flow[start_idx:end_idx]
+            batch_spk_emb = spk_emb_for_flow[start_idx:end_idx]
+
+            # Flow generation for this batch
+            flow_start_time = time.time()
+            batch_generated_mels, batch_generated_mels_lens = self.flow(
+                batch_flow_inputs.cuda(), batch_flow_inputs_lens.cuda(),
+                batch_prompt_mels.cuda(), batch_prompt_mels_lens.cuda(), batch_spk_emb.cuda(),
+                streaming=False, finalize=True
+            )
+            flow_total_time += time.time() - flow_start_time
+
+            # HiFi-GAN generation for this batch
+            hifigan_start_time = time.time()
+            batch_size_current = end_idx - start_idx
+            for i in range(batch_size_current):
+                mel = batch_generated_mels[i, :, batch_prompt_mels_lens[i].item():batch_generated_mels_lens[i].item()].unsqueeze(0)
+                wav, _ = self.hift(speech_feat=mel)
+                generated_wavs.append(wav)
+            hifigan_total_time += time.time() - hifigan_start_time
+
+        timing_stats['flow_generation'] = flow_total_time
+        timing_stats['hifigan_generation'] = hifigan_total_time
+
+        # Calculate total time and batch statistics
+        timing_stats['model.forward_total'] = sum(timing_stats.values())
+        timing_stats['batch_size'] = len(generated_wavs)
+        timing_stats['batch_size_flow'] = batch_size_flow
+
+        results_dict['generated_wavs'] = generated_wavs
+        return results_dict, timing_stats

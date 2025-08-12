@@ -19,50 +19,79 @@ import argparse
 import json
 import onnxruntime
 import os
-
+import sys
 import torch
+import time
 import torch.distributed as dist
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from tqdm import tqdm
-import regex
-
-import ttsfrd
-from cosyvoice_ttsfrd import get_resource_path
-from transformers import AutoTokenizer
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import s3tokenizer
 
+from flashcosyvoice.config import SamplingParams, CosyVoice2LLMConfig, Config
 from flashcosyvoice.cosyvoice2 import CosyVoice2
 from flashcosyvoice.utils.audio import mel_spectrogram
 
 
-def is_only_punctuation(text):
-    # Regular expression: Match strings that consist only of punctuation marks or are empty.
-    punctuation_pattern = r'^[\p{P}\p{S}]*$'
-    return bool(regex.fullmatch(punctuation_pattern, text))
+def save_file_async(
+    wav, prompt_speech_tokens, generated_speech_tokens,
+    info, timing_stats
+):
+    """Save audio asynchronously."""
+    try:
+        os.makedirs(os.path.dirname(info['wav']), exist_ok=True)
+        if wav is not None:
+            wav = wav.cpu()
+            torchaudio.save(info['wav'], wav, 24000)
+            duration = wav.shape[-1] / 24000.0
+            rtf = ((timing_stats['dataloader_time'] + timing_stats['model_inference_time']) / timing_stats['batch_size']) / duration
+            timing_stats['rtf'] = rtf
+        else:
+            duration = 0.0
+        info['timing_stats'] = timing_stats
+        info['prompt_speech_tokens'] = prompt_speech_tokens
+        info['generated_speech_tokens'] = generated_speech_tokens
+        with open(f"{info['wav'].replace('.wav', '.json')}", "w") as f:
+            json.dump(info, f, ensure_ascii=False, indent=4)
+        return duration
+    except Exception as e:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+        tqdm.write(f"[{timestamp}] - [ERROR] - Error saving audio {info.get('key', 'unknown')}: {e}")
+        return 0.0
 
 
 class AudioDataset(Dataset):
 
-    def __init__(self, data_list, model_path):
+    def __init__(self, text_norm, text_tokenizer, data_list, model_config: Config):
         self.datas = []
-        self.text_norm = ttsfrd.TtsFrontendEngine()
-        self.text_norm.initialize(get_resource_path())
-        self.text_norm.set_lang_type('pinyinvg')
+        self.text_norm = text_norm
+        self.model_config = model_config
 
         """Example data_list:
         ```
-        {"key": "uttid_1", "prompt_text": "你好，我是小明。", "text": "你好，我是小红。", "prompt_wav": "data/audio/00000000.wav"}
-        {"key": "uttid_2", "prompt_text": "你好，我是小红。", "text": "你好，我是小明。", "prompt_wav": "data/audio/00000001.wav"}
+        {"key": "uttid_1", "prompt_text": "你好，我是小明。", "text": "你好，我是小红。", "prompt_wav": "/mnt/data/audio/00000000.wav", "wav": "/mnt/data/audio_synthetic/uttid_1.wav"}
+        {"key": "uttid_2", "prompt_text": "你好，我是小红。", "text": "你好，我是小明。", "prompt_wav": "/mnt/data/audio/00000001.wav", "wav": "/mnt/data/audio_synthetic/uttid_2.wav"}
         ```
+        Note:
+            - `key` is the key of this sample.
+            - `prompt_text` is the text used for prompt.
+            - `text` is the text used for generating real audio.
+            - `prompt_wav` is the audio used for prompt.
+            - `wav` is the path to the generated audio to be saved (we highly recommend to pre-define the save path before running the script).
         """
         missing = 0
         with open(data_list, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             total_lines = len(lines)
-            for line in tqdm(lines, desc='Loading data'):
+            if torch.distributed.get_node_local_rank() == 0:
+                iterator = tqdm(lines, desc='Loading data')
+            else:
+                iterator = lines
+            for line in iterator:
                 data = json.loads(line.strip())
                 valid = True
                 for k in ['key', 'prompt_text', 'text', 'prompt_wav']:
@@ -75,34 +104,19 @@ class AudioDataset(Dataset):
                 if not os.path.exists(data['prompt_wav']):
                     valid = False
                 if valid:
-                    texts = [i["text"] for i in json.loads(self.text_norm.do_voicegen_frd(data['text'].strip()))["sentences"]]
-                    texts = [i for i in texts if not is_only_punctuation(i)]
-                    key, suffix = data['key'], 0
-                    for text in texts:
-                        data['key'] = f"{key}/part{suffix}"
-                        data['text'] = text
-                        suffix += 1
-                        self.datas.append(data)
+                    self.datas.append(data)
                 else:
                     missing += 1
-        print(f'Loaded {total_lines} lines, found {missing} missing lines, split valid lines into {len(self.datas)} samples (due to text normalization).')
+        if torch.distributed.get_node_local_rank() == 0:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f'[{timestamp}] - [INFO] - Loaded {total_lines} lines, found {missing} missing lines, total valid lines == {len(self.datas)}.')
 
-        self.special_tokens = {
-            "eos_token": "<|endoftext|>",
-            "pad_token": "<|endoftext|>",
-            "additional_special_tokens": [
-                "<|im_start|>", "<|im_end|>", "<|endofprompt|>", "[breath]", "<strong>", "</strong>",
-                "[noise]", "[laughter]", "[cough]", "[clucking]", "[accent]", "[quick_breath]",
-                "<laughter>", "</laughter>", "[hissing]", "[sigh]", "[vocalized-noise]", "[lipsmack]", "[mn]",
-            ],
-        }
-        self.text_tokenizer = AutoTokenizer.from_pretrained(f"{model_path}/CosyVoice-BlankEN")
-        self.text_tokenizer.add_special_tokens(self.special_tokens)
+        self.text_tokenizer = text_tokenizer
 
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         option.intra_op_num_threads = 1
-        self.spk_model = onnxruntime.InferenceSession(f"{model_path}/campplus.onnx", sess_options=option,
+        self.spk_model = onnxruntime.InferenceSession(f"{self.model_config.model}/campplus.onnx", sess_options=option,
                                                       providers=["CPUExecutionProvider"])
 
     def __len__(self):
@@ -111,54 +125,75 @@ class AudioDataset(Dataset):
     def __getitem__(self, idx):
         data = self.datas[idx]
 
-        # 1. feature for s3tokenizer
-        audio = s3tokenizer.load_audio(data['prompt_wav'], sr=16000)
-        if audio.shape[0] / 16000 > 30:
-            print(
-                f'do not support extract speech token for audio longer than 30s, file_path: {data["prompt_wav"]}'  # noqa
-            )
-            log_mel = torch.zeros(128, 0)
-        else:
-            log_mel = s3tokenizer.log_mel_spectrogram(audio)
+        try:
+            # 1. feature for s3tokenizer
+            audio = s3tokenizer.load_audio(data['prompt_wav'], sr=16000)  # [T]
+            log_mel = s3tokenizer.log_mel_spectrogram(audio)  # [num_mels, T]
 
-        # 2. feature for speaker embedding
-        spk_feat = kaldi.fbank(audio.unsqueeze(0), num_mel_bins=80, dither=0, sample_frequency=16000)
-        spk_feat = spk_feat - spk_feat.mean(dim=0, keepdim=True)
-        spk_emb = self.spk_model.run(
-            None, {self.spk_model.get_inputs()[0].name: spk_feat.unsqueeze(dim=0).cpu().numpy()}
-        )[0].flatten().tolist()
+            # 2. feature for speaker embedding
+            spk_feat = kaldi.fbank(audio.unsqueeze(0), num_mel_bins=80, dither=0, sample_frequency=16000)
+            spk_feat = spk_feat - spk_feat.mean(dim=0, keepdim=True)
+            spk_emb = self.spk_model.run(
+                None, {self.spk_model.get_inputs()[0].name: spk_feat.unsqueeze(dim=0).cpu().numpy()}
+            )[0].flatten().tolist()
 
-        # 3. feature for flow
-        audio = torchaudio.transforms.Resample(orig_freq=16000, new_freq=24000)(audio.unsqueeze(0))
-        mel = mel_spectrogram(audio).squeeze(dim=0).transpose(0, 1).unsqueeze(dim=0)
-        mel_len = mel.shape[1]
+            # 3. feature for flow
+            audio, sample_rate = torchaudio.load(data['prompt_wav'], backend='soundfile')
+            audio = audio.mean(dim=0, keepdim=True)  # [1, T]
+            if sample_rate != 24000:
+                audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
+            mel = mel_spectrogram(audio).transpose(1, 2).squeeze(0)  # [T, num_mels]
+            mel_len = mel.shape[0]
 
-        # 4. feature for llm
-        prompt_texts = [i["text"] for i in json.loads(self.text_norm.do_voicegen_frd(data['prompt_text'].strip()))["sentences"]]
-        prompt_text = ''.join(prompt_texts)
-        prompt_text_ids = self.text_tokenizer([prompt_text], return_tensors="pt")["input_ids"][0].cpu().tolist()
-        texts = [i["text"] for i in json.loads(self.text_norm.do_voicegen_frd(data['text'].strip()))["sentences"]]
-        text = ''.join(texts)
-        text_ids = self.text_tokenizer([text], return_tensors="pt")["input_ids"][0].cpu().tolist()
-        item = {
-            "input_ids": prompt_text_ids + text_ids, "input_len": len(prompt_text_ids) + len(text_ids),
-            "spk_emb": spk_emb, "mel": mel, "mel_len": mel_len, "log_mel": log_mel, "info": data,
-        }
+            # 4. feature for llm
+            if self.text_norm is not None:
+                prompt_texts = [i["text"] for i in json.loads(self.text_norm.do_voicegen_frd(data['prompt_text'].strip()))["sentences"]]
+                prompt_text = ''.join(prompt_texts)
+                texts = [i["text"] for i in json.loads(self.text_norm.do_voicegen_frd(data['text'].strip()))["sentences"]]
+                text = ''.join(texts)
+            else:
+                prompt_text = data['prompt_text']
+                text = data['text']
+            prompt_text_ids = self.text_tokenizer.encode(prompt_text)
+            prompt_text_ids = [i + self.model_config.hf_config.speech_vocab_size + 2 for i in prompt_text_ids]
+            text_ids = self.text_tokenizer.encode(text)
+            text_ids = [i + self.model_config.hf_config.speech_vocab_size + 2 for i in text_ids]
+            item = {
+                "prompt_text_tokens": prompt_text_ids, "text_tokens": text_ids,
+                "spk_emb": spk_emb, "mel": mel, "mel_len": mel_len, "log_mel": log_mel, "info": data,
+                "min_tokens": len(text_ids) * self.model_config.min_token_text_ratio,
+                "max_tokens": len(text_ids) * self.model_config.max_token_text_ratio,
+            }
+        except Exception as e:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f"[{timestamp}] - [WARNING] - Error processing data item {data.get('key', idx)}: {e}")
+            return None
         return item
 
 
 def collate_fn(batch):
-    input_ids = [item["input_ids"] for item in batch]
-    input_lens = [item["input_len"] for item in batch]
-    spk_embs = [item["spk_emb"] for item in batch]
-    mels = [item["mel"] for item in batch]
-    mels_lens = [item["mel_len"] for item in batch]
-    log_mels = [item["log_mel"] for item in batch]
-    log_mels, log_mels_lens = s3tokenizer.padding(log_mels)
-    infos = [item["info"] for item in batch]
+    prompt_mels_for_llm = [item["log_mel"] for item in batch if item is not None]
+    prompt_mels_for_llm, prompt_mels_lens_for_llm = s3tokenizer.padding(prompt_mels_for_llm)  # [B, num_mels=128, T]
+    prompt_text_tokens_for_llm = [item["prompt_text_tokens"] for item in batch if item is not None]
+    text_tokens_for_llm = [item["text_tokens"] for item in batch if item is not None]
+    prompt_mels_for_flow = [item["mel"] for item in batch if item is not None]
+    prompt_mels_for_flow = torch.nn.utils.rnn.pad_sequence(prompt_mels_for_flow, batch_first=True, padding_value=0)  # [B, T', num_mels=80]
+    prompt_mels_lens_for_flow = [item["mel_len"] for item in batch if item is not None]
+    prompt_mels_lens_for_flow = torch.tensor(prompt_mels_lens_for_flow)
+    spk_emb_for_flow = [item["spk_emb"] for item in batch if item is not None]
+    spk_emb_for_flow = torch.tensor(spk_emb_for_flow)
+    sampling_params = [SamplingParams(min_tokens=item["min_tokens"], max_tokens=item["max_tokens"], use_ras=True) for item in batch if item is not None]
+    infos = [item["info"] for item in batch if item is not None]
     return {
-        "input_ids": input_ids, "input_lens": input_lens, "spk_embs": spk_embs,
-        "mels": mels, "mels_lens": mels_lens, "log_mels": log_mels, "log_mels_lens": log_mels_lens, "infos": infos,
+        "prompt_mels_for_llm": prompt_mels_for_llm,
+        "prompt_mels_lens_for_llm": prompt_mels_lens_for_llm,
+        "prompt_text_tokens_for_llm": prompt_text_tokens_for_llm,
+        "text_tokens_for_llm": text_tokens_for_llm,
+        "prompt_mels_for_flow": prompt_mels_for_flow,
+        "prompt_mels_lens_for_flow": prompt_mels_lens_for_flow,
+        "spk_emb_for_flow": spk_emb_for_flow,
+        "sampling_params": sampling_params,
+        "infos": infos,
     }
 
 
@@ -166,7 +201,8 @@ def init_distributed():
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
-    print(f'Inference on multiple gpus, this gpu {local_rank}, rank {rank}, world_size {world_size}')
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+    tqdm.write(f'[{timestamp}] - [INFO] - Inference on multiple gpus, this gpu {local_rank}, rank {rank}, world_size {world_size}')
     torch.cuda.set_device(local_rank)
     dist.init_process_group("nccl")
     return world_size, local_rank, rank
@@ -182,14 +218,14 @@ def get_args():
                         required=True,
                         type=str,
                         help='data list')
-    parser.add_argument('--output_dir',
-                        required=True,
-                        type=str,
-                        help='dir to save result')
-    parser.add_argument('--batch_size',
+    parser.add_argument('--batch_size_dataloader',
                         required=True,
                         type=int,
-                        help='batch size (per-device) for inference')
+                        help='batch size (per-device) for dataloading')
+    parser.add_argument('--batch_size_flow',
+                        required=True,
+                        type=int,
+                        help='batch size (per-device) for flow-matching')
     parser.add_argument('--num_workers',
                         type=int,
                         default=4,
@@ -198,49 +234,164 @@ def get_args():
                         type=int,
                         default=5,
                         help='prefetch for dataloader')
+    parser.add_argument('--enable_tn',
+                        action='store_true',
+                        help='enable text normalization')
+    parser.add_argument('--only_llm',
+                        action='store_true',
+                        help='only generate speech tokens from llm')
     args = parser.parse_args()
     return args
 
 
 def main():
     args = get_args()
-    os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.enable_tn:
+        # Check python version, if == 3.10, use ttsfrd
+        if sys.version_info.major == 3 and sys.version_info.minor == 10:
+            # Check if ttsfrd is installed
+            try:
+                import ttsfrd
+                from cosyvoice_ttsfrd import get_resource_path
+            except ImportError:
+                raise ImportError("ttsfrd is not installed, please install it first, see `https://github.com/xingchensong/CosyVoice-ttsfrd` for installation guide.")
+            text_norm = ttsfrd.TtsFrontendEngine()
+            text_norm.initialize(get_resource_path())
+            text_norm.set_lang_type('pinyinvg')
+        else:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f"[{timestamp}] - [WARNING] - Only python 3.10 is supported for ttsfrd, see `https://github.com/xingchensong/CosyVoice-ttsfrd` for more info. Setting enable_tn to False...")
+            # TODO: maybe we should use wetext if python version is not 3.10?
+            args.enable_tn = False
+            text_norm = None
+    else:
+        text_norm = None
+
     assert (torch.cuda.is_available())
     world_size, local_rank, rank = init_distributed()
+    config = Config(model=args.model_path, enforce_eager=True, tensor_parallel_size=1,
+                    max_num_seqs=args.batch_size_dataloader,
+                    hf_config=CosyVoice2LLMConfig(), rank=local_rank)
+    model = CosyVoice2(config)
 
-    device = torch.device(args.device)
-
-    model = CosyVoice2(
-        model_path=args.model_path,
-        device=device,
-    )
-
-    dataset = AudioDataset(args.data_list, args.model_path)
+    dataset = AudioDataset(text_norm, model.llm.tokenizer, args.data_list, config)
     sampler = DistributedSampler(dataset,
                                  num_replicas=world_size,
                                  rank=rank)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True,
+    dataloader = DataLoader(dataset, batch_size=args.batch_size_dataloader, num_workers=args.num_workers, pin_memory=True,
                             sampler=sampler, shuffle=False, prefetch_factor=args.prefetch, collate_fn=collate_fn)
-
     total_steps = len(dataset)
 
-    if rank == 0:
-        progress_bar = tqdm(total=total_steps, desc="Processing", unit="wavs")
+    if local_rank == 0:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+        tqdm.write(f"[{timestamp}] - [INFO] - {args}")
+        progress_bar = tqdm(total=total_steps, desc="Processing batches", unit="wav",
+                            position=0, leave=True, dynamic_ncols=True)
 
-    writer = open(f"{args.output_dir}/part_{rank + 1}_of_{world_size}", "w")
+    cpu_counts = os.cpu_count()
+    executor = ThreadPoolExecutor(max_workers=min(args.batch_size_dataloader, cpu_counts // 8))
+    pending_futures = []
+    dataloader_iter = iter(dataloader)
+    total_duration = 0.01  # avoid division by zero
+    start_time = time.time()
+    succeed_wavs = 0
+    failed_wavs = 0
+    last_print_time = start_time
 
-    for batch in dataloader:
-        hifigan_outputs = model(**batch)
-        for i in range(len(hifigan_outputs)):
-            batch['infos'][i]['wav'] = f"{args.output_dir}/{batch['infos'][i]['key']}.wav"
-            torchaudio.save(batch['infos'][i]['wav'], hifigan_outputs[i].unsqueeze(0), 24000)
-            writer.write(f"{json.dumps(batch['infos'][i], ensure_ascii=False)}\n")
-        if rank == 0:
-            progress_bar.update(world_size * len(batch["input_ids"]))
+    while True:
+        try:
+            dataloader_start = time.time()
+            batch = next(dataloader_iter)
+            dataloader_time = time.time() - dataloader_start
 
-    if rank == 0:
+            if len(batch['infos']) == 0:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+                tqdm.write(f"[{timestamp}] - [WARNING] - rank {rank} of {world_size}: No valid batch found, skipping this batch...")
+                continue
+
+            model_start = time.time()
+            results_dict, timing_stats = model(**batch, batch_size_flow=args.batch_size_flow,
+                                               only_llm=args.only_llm)
+            model_time = time.time() - model_start
+
+            timing_stats['dataloader_time'] = dataloader_time
+            timing_stats['model_inference_time'] = model_time
+
+            if args.only_llm:
+                results_dict['generated_wavs'] = [None] * len(results_dict['prompt_speech_tokens'])
+
+            for i in range(len(results_dict['generated_wavs'])):
+                future = executor.submit(
+                    save_file_async, results_dict['generated_wavs'][i],
+                    results_dict['prompt_speech_tokens'][i],
+                    results_dict['generated_speech_tokens'][i],
+                    batch['infos'][i].copy(), timing_stats.copy()
+                )
+                pending_futures.append(future)
+
+            completed_futures = []
+            for future in pending_futures:
+                if future.done():
+                    try:
+                        duration = future.result()
+                        total_duration += duration
+                        succeed_wavs += 1
+                    except Exception as e:
+                        failed_wavs += 1
+                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+                        tqdm.write(f"[{timestamp}] - [ERROR] - rank {rank} of {world_size}: Error in async save task: {e}")
+                    completed_futures.append(future)
+
+            for future in completed_futures:
+                pending_futures.remove(future)
+
+            if local_rank == 0:
+                update_n = world_size * len(batch["prompt_text_tokens_for_llm"])
+                if progress_bar.n + update_n > progress_bar.total:
+                    progress_bar.update(progress_bar.total - progress_bar.n)
+                else:
+                    progress_bar.update(update_n)
+
+                current_time = time.time()
+                if current_time - last_print_time >= 120 and not args.only_llm:
+                    elapsed_time = current_time - start_time
+                    current_rtf = elapsed_time / total_duration if total_duration > 0.01 else 0
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+                    tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {total_duration:.2f}s ({total_duration / 3600:.2f} h), RTF: {current_rtf:.5f}, Elapsed time: {elapsed_time:.2f}s")
+                    last_print_time = current_time
+        except StopIteration:
+            break
+        except Exception as e:
+            failed_wavs += 1
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f"[{timestamp}] - [ERROR] - rank {rank} of {world_size}: Error in main loop: {e}")
+            continue
+
+    if local_rank == 0:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+        tqdm.write(f"[{timestamp}] - [INFO] - Waiting for {len(pending_futures)} pending save tasks to complete...")
+
+    for future in pending_futures:
+        try:
+            duration = future.result(timeout=60)
+            total_duration += duration
+            succeed_wavs += 1
+        except Exception as e:
+            failed_wavs += 1
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f"[{timestamp}] - [ERROR] - rank {rank} of {world_size}: Error in final async save task: {e}")
+    executor.shutdown(wait=True)
+
+    if local_rank == 0:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+        tqdm.write(f"[{timestamp}] - [INFO] - All async save tasks completed.")
         progress_bar.close()
-    writer.close()
+
+    if not args.only_llm:
+        total_time = time.time() - start_time
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+        tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {total_duration:.2f}s ({total_duration / 3600:.2f} h), RTF: {total_time / total_duration:.5f}")
 
     dist.barrier()
     dist.destroy_process_group()

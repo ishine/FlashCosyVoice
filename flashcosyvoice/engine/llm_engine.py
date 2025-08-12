@@ -21,6 +21,7 @@ class LLMEngine:
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
+        assert config.tensor_parallel_size == 1, "NOTE(xcsong): Currently only support tp=1"
         for i in range(1, config.tensor_parallel_size):
             event = ctx.Event()
             process = ctx.Process(target=ModelRunner, args=(config, i, event))
@@ -51,8 +52,9 @@ class LLMEngine:
             config.eos = config.hf_config.eos_token_id
         else:
             config.eos = self.tokenizer.eos_token_id
-        self.model_runner = ModelRunner(config, 0, self.events)
+        self.model_runner = ModelRunner(config, config.rank, self.events)
         self.scheduler = Scheduler(config)
+        self.config = config
         atexit.register(self.exit)
 
     def exit(self):
@@ -85,24 +87,32 @@ class LLMEngine:
         use_tqdm: bool = True,
     ) -> list[str]:
         if use_tqdm:
-            pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+            pbar = tqdm(total=len(prompts), desc="Generating tokens (LLM)", leave=False,
+                        dynamic_ncols=True, position=self.config.rank + 1)
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
         for prompt, sp in zip(prompts, sampling_params):
             self.add_request(prompt, sp)
         outputs = {}
-        prefill_throughput = decode_throughput = 0.
+        prefill_throughput = decode_throughput = instant_decode_throughput = 0.
+        total_decode_tokens = 0
+        total_decode_time = 0.
         while not self.is_finished():
             t = perf_counter()
             output, num_tokens = self.step()
+            step_time = perf_counter() - t
             if use_tqdm:
                 if num_tokens > 0:
-                    prefill_throughput = num_tokens / (perf_counter() - t)
+                    prefill_throughput = num_tokens / step_time
                 else:
-                    decode_throughput = -num_tokens / (perf_counter() - t)
+                    instant_decode_throughput = -num_tokens / step_time
+                    total_decode_tokens += -num_tokens
+                    total_decode_time += step_time
+                    decode_throughput = total_decode_tokens / total_decode_time if total_decode_time > 0 else 0
                 pbar.set_postfix({
                     "Prefill": f"{int(prefill_throughput)}tok/s",
-                    "Decode": f"{int(decode_throughput)}tok/s",
+                    "AvgDecode": f"{int(decode_throughput)}tok/s",
+                    "InstDecode": f"{int(instant_decode_throughput)}tok/s",
                 })
             for seq_id, token_ids in output:
                 outputs[seq_id] = token_ids

@@ -165,7 +165,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
-        mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
+        mask = (~make_pad_mask(token_len, max_len=token.shape[1])).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
         # text encode
@@ -183,7 +183,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         conds = conds.transpose(1, 2)
 
         h_lengths = h_lengths.sum(dim=-1).squeeze(dim=1)
-        mask = (~make_pad_mask(h_lengths)).to(h)
+        mask = (~make_pad_mask(h_lengths, max_len=h.shape[1])).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),

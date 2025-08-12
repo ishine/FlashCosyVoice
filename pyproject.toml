@@ -22,6 +22,9 @@ dependencies = [
     "xxhash",                # nano-vllm
 ]
 
+[project.scripts]
+flashcosyvoice = "flashcosyvoice.cli:main"
+
 [project.urls]
 Homepage="https://github.com/xingchensong/flashcosyvoice"
 
