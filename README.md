@@ -93,7 +93,7 @@ torchrun --nproc_per_node=8 --nnodes=1 \
 |  [[cosyvoice/pytorch_example.py]](https://github.com/FunAudioLLM/CosyVoice?tab=readme-ov-file#cosyvoice2-usage) (fp32 llm + fp32 flow) |   0.487    |    1x     |   4.17 / 6.25 / 12.85 / 8.25 |
 |  [[cosyvoice/pytorch_example.py]](https://github.com/FunAudioLLM/CosyVoice?tab=readme-ov-file#cosyvoice2-usage) (fp16 llm + fp16 flow) |   0.554    |    0.9x  |   3.95 / 6.21 / 9.82 / 9.44  |
 |  [[cosyvoice/vllm_example.py]](https://github.com/FunAudioLLM/CosyVoice/blob/main/vllm_example.py) (bf16 llm + fp16 flow)              |   0.167    |    ~3x     |   4.28 / 6.49 / 8.40 / 9.59  |
-|  FlashCosyVoice (bf16 llm + fp32 flow)  |   0.081   |   ~6x    |  3.89 / 6.11 / 8.50 / 10.27 |
+|  FlashCosyVoice (bf16 llm + fp32 flow)  |   0.086   |   ~5.6x    |  3.89 / 6.11 / 8.50 / 10.27 |
 |  FlashCosyVoice (bf16 llm + fp16 flow)  |   0.055   |   ~9x    | 3.88 / 6.11 / 8.47  / 10.33 |
 
 Conclusion
