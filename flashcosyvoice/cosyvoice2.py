@@ -15,6 +15,7 @@ import torch
 import time
 import s3tokenizer
 from tqdm import tqdm
+from datetime import datetime
 
 from flashcosyvoice.config import Config, SamplingParams
 from flashcosyvoice.engine.llm_engine import LLMEngine
@@ -34,6 +35,10 @@ class CosyVoice2(torch.nn.Module):
         self.use_tqdm = torch.distributed.get_node_local_rank() == 0
 
         self.flow = CausalMaskedDiffWithXvec()
+        if self.config.hf_config.fp16_flow:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+            tqdm.write(f"[{timestamp}] - [INFO] - Casting flow to fp16")
+            self.flow.half()
         self.flow.load_state_dict(torch.load(f"{self.config.model}/flow.pt", map_location="cpu"), strict=True)
         self.flow.cuda().eval()
 
@@ -126,11 +131,12 @@ class CosyVoice2(torch.nn.Module):
 
             # Flow generation for this batch
             flow_start_time = time.time()
-            batch_generated_mels, batch_generated_mels_lens = self.flow(
-                batch_flow_inputs.cuda(), batch_flow_inputs_lens.cuda(),
-                batch_prompt_mels.cuda(), batch_prompt_mels_lens.cuda(), batch_spk_emb.cuda(),
-                streaming=False, finalize=True
-            )
+            with torch.amp.autocast("cuda", dtype=torch.float16 if self.config.hf_config.fp16_flow else torch.float32):
+                batch_generated_mels, batch_generated_mels_lens = self.flow(
+                    batch_flow_inputs.cuda(), batch_flow_inputs_lens.cuda(),
+                    batch_prompt_mels.cuda(), batch_prompt_mels_lens.cuda(), batch_spk_emb.cuda(),
+                    streaming=False, finalize=True
+                )
             flow_total_time += time.time() - flow_start_time
 
             # HiFi-GAN generation for this batch

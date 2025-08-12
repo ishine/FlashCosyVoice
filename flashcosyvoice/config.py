@@ -35,6 +35,7 @@ class CosyVoice2LLMConfig:
     speech_vocab_size: int = 6562  # actually 6564, we only care about non-streaming inference, so cut off tokens (6562, 6563) that are only used for streaming TTS
     lm_head_bias: bool = True
     qkv_bias: bool = True
+    fp16_flow: bool = True
 
 
 @dataclass

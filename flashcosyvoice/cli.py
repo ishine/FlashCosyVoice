@@ -29,12 +29,21 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from tqdm import tqdm
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import random
+import numpy as np
 
 import s3tokenizer
 
 from flashcosyvoice.config import SamplingParams, CosyVoice2LLMConfig, Config
 from flashcosyvoice.cosyvoice2 import CosyVoice2
 from flashcosyvoice.utils.audio import mel_spectrogram
+
+
+def set_all_random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def save_file_async(
@@ -240,6 +249,13 @@ def get_args():
     parser.add_argument('--only_llm',
                         action='store_true',
                         help='only generate speech tokens from llm')
+    parser.add_argument('--fp16_flow',
+                        action='store_true',
+                        help='enable fp16 flow')
+    parser.add_argument('--seed',
+                        type=int,
+                        default=1986,
+                        help='random seed for generation')
     args = parser.parse_args()
     return args
 
@@ -272,8 +288,10 @@ def main():
     world_size, local_rank, rank = init_distributed()
     config = Config(model=args.model_path, enforce_eager=True, tensor_parallel_size=1,
                     max_num_seqs=args.batch_size_dataloader,
-                    hf_config=CosyVoice2LLMConfig(), rank=local_rank)
+                    hf_config=CosyVoice2LLMConfig(fp16_flow=args.fp16_flow), rank=local_rank)
     model = CosyVoice2(config)
+
+    set_all_random_seed(args.seed)
 
     dataset = AudioDataset(text_norm, model.llm.tokenizer, args.data_list, config)
     sampler = DistributedSampler(dataset,
@@ -368,6 +386,8 @@ def main():
             tqdm.write(f"[{timestamp}] - [ERROR] - rank {rank} of {world_size}: Error in main loop: {e}")
             continue
 
+    total_time = time.time() - start_time
+
     if local_rank == 0:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
         tqdm.write(f"[{timestamp}] - [INFO] - Waiting for {len(pending_futures)} pending save tasks to complete...")
@@ -389,7 +409,6 @@ def main():
         progress_bar.close()
 
     if not args.only_llm:
-        total_time = time.time() - start_time
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
         tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {total_duration:.2f}s ({total_duration / 3600:.2f} h), RTF: {total_time / total_duration:.5f}")
 
