@@ -303,7 +303,7 @@ def main():
     if local_rank == 0:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
         tqdm.write(f"[{timestamp}] - [INFO] - {args}")
-        progress_bar = tqdm(total=total_steps, desc="Processing batches", unit="wav",
+        progress_bar = tqdm(total=total_steps, desc="Processing samples", unit="wav",
                             position=0, leave=True, dynamic_ncols=True)
 
     cpu_counts = os.cpu_count()
