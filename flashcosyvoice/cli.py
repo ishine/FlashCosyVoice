@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Example Usage
-
+""" Example Usage: see README.md
 """
 
 import argparse
@@ -311,8 +310,9 @@ def main():
     executor = ThreadPoolExecutor(max_workers=min(args.batch_size_dataloader, cpu_counts // 8))
     pending_futures = []
     dataloader_iter = iter(dataloader)
-    total_duration = 0.01  # avoid division by zero
+    succeed_duration = 0.01  # avoid division by zero
     start_time = time.time()
+    estimated_total_wavs = 0
     succeed_wavs = 0
     failed_wavs = 0
     last_print_time = start_time
@@ -332,6 +332,8 @@ def main():
             results_dict, timing_stats = model(**batch, batch_size_flow=args.batch_size_flow,
                                                only_llm=args.only_llm)
             model_time = time.time() - model_start
+
+            estimated_total_wavs += len(results_dict['generated_wavs'])
 
             timing_stats['dataloader_time'] = dataloader_time
             timing_stats['model_inference_time'] = model_time
@@ -353,7 +355,7 @@ def main():
                 if future.done():
                     try:
                         duration = future.result()
-                        total_duration += duration
+                        succeed_duration += duration
                         succeed_wavs += 1
                     except Exception as e:
                         failed_wavs += 1
@@ -374,9 +376,11 @@ def main():
                 current_time = time.time()
                 if current_time - last_print_time >= 120 and not args.only_llm:
                     elapsed_time = current_time - start_time
-                    current_rtf = elapsed_time / total_duration if total_duration > 0.01 else 0
+                    avg_duration = succeed_duration / succeed_wavs if succeed_wavs > 0 else 0
+                    estimated_total_duration = avg_duration * estimated_total_wavs
+                    current_rtf = elapsed_time / estimated_total_duration if estimated_total_duration > 0.01 else 0
                     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
-                    tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {total_duration:.2f}s ({total_duration / 3600:.2f} h), RTF: {current_rtf:.5f}, Elapsed time: {elapsed_time:.2f}s")
+                    tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Estimated total wavs: {estimated_total_wavs} ({estimated_total_wavs - succeed_wavs} pending to save), Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Estimated total duration: {estimated_total_duration:.2f}s ({estimated_total_duration / 3600:.2f} h), Estimated RTF: {current_rtf:.5f}, Elapsed time: {elapsed_time:.2f}s")  # noqa
                     last_print_time = current_time
         except StopIteration:
             break
@@ -395,7 +399,7 @@ def main():
     for future in pending_futures:
         try:
             duration = future.result(timeout=60)
-            total_duration += duration
+            succeed_duration += duration
             succeed_wavs += 1
         except Exception as e:
             failed_wavs += 1
@@ -410,7 +414,7 @@ def main():
 
     if not args.only_llm:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
-        tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {total_duration:.2f}s ({total_duration / 3600:.2f} h), RTF: {total_time / total_duration:.5f}")
+        tqdm.write(f"[{timestamp}] - [INFO] - rank {rank} of {world_size}: Final Report - Succeed wavs: {succeed_wavs}, Failed wavs: {failed_wavs}, Total duration: {succeed_duration:.2f}s ({succeed_duration / 3600:.2f} h), RTF: {total_time / succeed_duration:.5f}")  # noqa
 
     dist.barrier()
     dist.destroy_process_group()
