@@ -1,8 +1,9 @@
+import math
+from typing import Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Union, Optional
-import math
 
 
 def subsequent_chunk_mask(
@@ -155,13 +156,11 @@ class EspnetRelPositionalEncoding(torch.nn.Module):
 
     Args:
         d_model (int): Embedding dimension.
-        dropout_rate (float): Dropout rate.
         max_len (int): Maximum input length.
 
     """
 
     def __init__(self, d_model: int, max_len: int = 5000):
-        """Construct an PositionalEncoding object."""
         super(EspnetRelPositionalEncoding, self).__init__()
         self.d_model = d_model
         self.xscale = math.sqrt(self.d_model)
@@ -255,13 +254,12 @@ class LinearNoSubsampling(torch.nn.Module):
     Args:
         idim (int): Input dimension.
         odim (int): Output dimension.
-        dropout_rate (float): Dropout rate.
+        pos_enc_class (torch.nn.Module): Positional encoding class.
 
     """
 
     def __init__(self, idim: int, odim: int,
                  pos_enc_class: torch.nn.Module):
-        """Construct an linear object."""
         super().__init__()
         self.out = torch.nn.Sequential(
             torch.nn.Linear(idim, odim),
@@ -374,6 +372,7 @@ class MultiHeadedAttention(nn.Module):
         n_head (int): The number of heads.
         n_feat (int): The number of features.
         dropout_rate (float): Dropout rate.
+        key_bias (bool): Whether to use bias in key linear layer.
 
     """
 
@@ -382,7 +381,6 @@ class MultiHeadedAttention(nn.Module):
                  n_feat: int,
                  dropout_rate: float,
                  key_bias: bool = True):
-        """Construct an MultiHeadedAttention object."""
         super().__init__()
         assert n_feat % n_head == 0
         # We assume d_v always equals d_k
@@ -548,6 +546,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         n_head (int): The number of heads.
         n_feat (int): The number of features.
         dropout_rate (float): Dropout rate.
+        key_bias (bool): Whether to use bias in key linear layer.
     """
 
     def __init__(self,
@@ -555,7 +554,6 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
                  n_feat: int,
                  dropout_rate: float,
                  key_bias: bool = True):
-        """Construct an RelPositionMultiHeadedAttention object."""
         super().__init__(n_head, n_feat, dropout_rate, key_bias)
         # linear transformation for positional encoding
         self.linear_pos = nn.Linear(n_feat, n_feat, bias=False)
@@ -694,7 +692,6 @@ class PositionwiseFeedForward(torch.nn.Module):
             dropout_rate: float,
             activation: torch.nn.Module = torch.nn.ReLU(),
     ):
-        """Construct a PositionwiseFeedForward object."""
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = torch.nn.Linear(idim, hidden_units)
         self.activation = activation
@@ -742,7 +739,6 @@ class ConformerEncoderLayer(nn.Module):
         dropout_rate: float = 0.0,
         normalize_before: bool = True,
     ):
-        """Construct an EncoderLayer object."""
         super().__init__()
         self.self_attn = self_attn
         self.feed_forward = feed_forward
@@ -843,6 +839,23 @@ class ConformerEncoderLayer(nn.Module):
 
 
 class UpsampleConformerEncoder(torch.nn.Module):
+    """
+    Args:
+        input_size (int): input dim
+        output_size (int): dimension of attention
+        attention_heads (int): the number of heads of multi head attention
+        linear_units (int): the hidden units number of position-wise feed
+            forward
+        num_blocks (int): the number of decoder blocks
+        static_chunk_size (int): chunk size for static chunk training and
+            decoding
+        use_dynamic_chunk (bool): whether use dynamic chunk size for
+            training or not, You can only use fixed chunk(chunk_size > 0)
+            or dyanmic chunk size(use_dynamic_chunk = True)
+        use_dynamic_left_chunk (bool): whether use dynamic left chunk in
+            dynamic chunk training
+        key_bias: whether use bias in attention.linear_k, False for whisper models.
+    """
 
     def __init__(
         self,
@@ -856,23 +869,6 @@ class UpsampleConformerEncoder(torch.nn.Module):
         use_dynamic_left_chunk: bool = False,
         key_bias: bool = True,
     ):
-        """
-        Args:
-            input_size (int): input dim
-            output_size (int): dimension of attention
-            attention_heads (int): the number of heads of multi head attention
-            linear_units (int): the hidden units number of position-wise feed
-                forward
-            num_blocks (int): the number of decoder blocks
-            static_chunk_size (int): chunk size for static chunk training and
-                decoding
-            use_dynamic_chunk (bool): whether use dynamic chunk size for
-                training or not, You can only use fixed chunk(chunk_size > 0)
-                or dyanmic chunk size(use_dynamic_chunk = True)
-            use_dynamic_left_chunk (bool): whether use dynamic left chunk in
-                dynamic chunk training
-            key_bias: whether use bias in attention.linear_k, False for whisper models.
-        """
         super().__init__()
         self._output_size = output_size
 

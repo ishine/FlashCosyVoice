@@ -1,8 +1,8 @@
 from collections import deque
 
 from flashcosyvoice.config import Config
-from flashcosyvoice.engine.sequence import Sequence, SequenceStatus
 from flashcosyvoice.engine.block_manager import BlockManager
+from flashcosyvoice.engine.sequence import Sequence, SequenceStatus
 
 
 class Scheduler:

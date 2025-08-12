@@ -1,10 +1,11 @@
+from functools import lru_cache
+
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 import triton
 import triton.language as tl
-from functools import lru_cache
 from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 
 from flashcosyvoice.config import CosyVoice2LLMConfig

@@ -15,25 +15,22 @@
 """HIFI-GAN"""
 
 from typing import Dict, List
+
 import numpy as np
-from scipy.signal import get_window
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import Conv1d
-from torch.nn import ConvTranspose1d
+from scipy.signal import get_window
+from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn.utils import remove_weight_norm
+
 try:
     from torch.nn.utils.parametrizations import weight_norm
 except ImportError:
-    from torch.nn.utils import weight_norm
+    from torch.nn.utils import weight_norm  # noqa
 
 from flashcosyvoice.modules.hifigan_components.layers import (
-    ResBlock,
-    SourceModuleHnNSF,
-    SourceModuleHnNSF2,
-    init_weights,
-)
+    ResBlock, SourceModuleHnNSF, SourceModuleHnNSF2, init_weights)
 
 
 class ConvRNNF0Predictor(nn.Module):
@@ -46,23 +43,23 @@ class ConvRNNF0Predictor(nn.Module):
 
         self.num_class = num_class
         self.condnet = nn.Sequential(
-            weight_norm(
+            weight_norm(  # noqa
                 nn.Conv1d(in_channels, cond_channels, kernel_size=3, padding=1)
             ),
             nn.ELU(),
-            weight_norm(
+            weight_norm(  # noqa
                 nn.Conv1d(cond_channels, cond_channels, kernel_size=3, padding=1)
             ),
             nn.ELU(),
-            weight_norm(
+            weight_norm(  # noqa
                 nn.Conv1d(cond_channels, cond_channels, kernel_size=3, padding=1)
             ),
             nn.ELU(),
-            weight_norm(
+            weight_norm(  # noqa
                 nn.Conv1d(cond_channels, cond_channels, kernel_size=3, padding=1)
             ),
             nn.ELU(),
-            weight_norm(
+            weight_norm(  # noqa
                 nn.Conv1d(cond_channels, cond_channels, kernel_size=3, padding=1)
             ),
             nn.ELU(),
@@ -89,13 +86,13 @@ class HiFTGenerator(nn.Module):
             nsf_alpha: float = 0.1,
             nsf_sigma: float = 0.003,
             nsf_voiced_threshold: float = 10,
-            upsample_rates: List[int] = [8, 5, 3],
-            upsample_kernel_sizes: List[int] = [16, 11, 7],
-            istft_params: Dict[str, int] = {"n_fft": 16, "hop_len": 4},
-            resblock_kernel_sizes: List[int] = [3, 7, 11],
-            resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-            source_resblock_kernel_sizes: List[int] = [7, 7, 11],
-            source_resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            upsample_rates: List[int] = [8, 5, 3],  # noqa
+            upsample_kernel_sizes: List[int] = [16, 11, 7],  # noqa
+            istft_params: Dict[str, int] = {"n_fft": 16, "hop_len": 4},  # noqa
+            resblock_kernel_sizes: List[int] = [3, 7, 11],  # noqa
+            resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],  # noqa
+            source_resblock_kernel_sizes: List[int] = [7, 7, 11],  # noqa
+            source_resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]],  # noqa
             lrelu_slope: float = 0.1,
             audio_limit: float = 0.99,
             f0_predictor: torch.nn.Module = None,
@@ -122,7 +119,7 @@ class HiFTGenerator(nn.Module):
             voiced_threshod=nsf_voiced_threshold)
         self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates) * istft_params["hop_len"])
 
-        self.conv_pre = weight_norm(
+        self.conv_pre = weight_norm(  # noqa
             Conv1d(in_channels, base_channels, 7, 1, padding=3)
         )
 
@@ -130,7 +127,7 @@ class HiFTGenerator(nn.Module):
         self.ups = nn.ModuleList()
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             self.ups.append(
-                weight_norm(
+                weight_norm(  # noqa
                     ConvTranspose1d(
                         base_channels // (2**i),
                         base_channels // (2**(i + 1)),
@@ -166,7 +163,7 @@ class HiFTGenerator(nn.Module):
             for _, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
                 self.resblocks.append(ResBlock(ch, k, d))
 
-        self.conv_post = weight_norm(Conv1d(ch, istft_params["n_fft"] + 2, 7, 1, padding=3))
+        self.conv_post = weight_norm(Conv1d(ch, istft_params["n_fft"] + 2, 7, 1, padding=3))  # noqa
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
         self.reflection_pad = nn.ReflectionPad1d((1, 0))

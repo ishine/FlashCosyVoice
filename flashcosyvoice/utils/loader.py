@@ -1,8 +1,9 @@
 import os
 from glob import glob
+
 import torch
-from torch import nn
 from safetensors import safe_open
+from torch import nn
 
 from flashcosyvoice.config import CosyVoice2LLMConfig
 
@@ -21,7 +22,7 @@ def load_text_llm(model: nn.Module, path: str):
                         v, shard_id = packed_modules_mapping[k]
                         param_name = weight_name.replace(k, v)
                         param = model.get_parameter(param_name)
-                        weight_loader = getattr(param, "weight_loader")
+                        weight_loader = param.weight_loader
                         weight_loader(param, f.get_tensor(weight_name), shard_id)
                         break
                 else:
@@ -35,7 +36,7 @@ def load_speech_llm(model: nn.Module, path: str, hf_config: CosyVoice2LLMConfig)
 
     # NOTE(xcsong): 1. load speech embedding + sos/taskid embedding + lm head
     embedding_weights = {}
-    tmp_weights = torch.load(f"{path}/llm.pt", map_location="cpu")
+    tmp_weights = torch.load(f"{path}/llm.pt", map_location="cpu", weights_only=True)
     missed, missed_names = 0, []
     for k, v in tmp_weights.items():
         if k == "speech_embedding.weight":  # torch.Size([6564, 896])
@@ -74,7 +75,7 @@ def load_speech_llm(model: nn.Module, path: str, hf_config: CosyVoice2LLMConfig)
                     param_name = weight_name.replace(kk, vv)
                     try:
                         param = model.get_parameter(param_name)
-                        weight_loader = getattr(param, "weight_loader")
+                        weight_loader = param.weight_loader
                         weight_loader(param, v, shard_id)
                         break
                     except Exception as e:

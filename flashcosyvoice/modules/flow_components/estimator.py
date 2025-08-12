@@ -1,21 +1,18 @@
+import math
+from typing import Any, Dict, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, Dict, Any
-import math
-from einops import pack, rearrange, repeat
-from diffusers.models.attention import (
-    GEGLU,
-    GELU,
-    AdaLayerNorm,
-    AdaLayerNormZero,
-    ApproximateGELU,
-)
+from diffusers.models.attention import (GEGLU, GELU, AdaLayerNorm,
+                                        AdaLayerNormZero, ApproximateGELU)
 from diffusers.models.attention_processor import Attention
 from diffusers.models.lora import LoRACompatibleLinear
 from diffusers.utils.torch_utils import maybe_allow_in_graph
+from einops import pack, rearrange, repeat
 
-from flashcosyvoice.modules.flow_components.upsample_encoder import add_optional_chunk_mask
+from flashcosyvoice.modules.flow_components.upsample_encoder import \
+    add_optional_chunk_mask
 
 
 def mask_to_bias(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -45,19 +42,19 @@ class SnakeBeta(nn.Module):
         >>> a1 = snakebeta(256)
         >>> x = torch.randn(256)
         >>> x = a1(x)
-    """
 
-    def __init__(self, in_features, out_features, alpha=1.0, alpha_trainable=True, alpha_logscale=True):
-        """
-        Initialization.
-        INPUT:
-            - in_features: shape of the input
-            - alpha - trainable parameter that controls frequency
-            - beta - trainable parameter that controls magnitude
+    Args:
+        in_features: shape of the input
+        out_features: shape of the output
+        alpha: trainable parameter that controls frequency
+        alpha_trainable: whether alpha is trainable
+        alpha_logscale: whether to use log scale for alpha
             alpha is initialized to 1 by default, higher values = higher-frequency.
             beta is initialized to 1 by default, higher values = higher-magnitude.
             alpha will be trained along with the rest of your model.
-        """
+    """
+
+    def __init__(self, in_features, out_features, alpha=1.0, alpha_trainable=True, alpha_logscale=True):
         super().__init__()
         self.in_features = out_features if isinstance(out_features, list) else [out_features]
         self.proj = LoRACompatibleLinear(in_features, out_features)
@@ -543,6 +540,22 @@ class CausalResnetBlock1D(ResnetBlock1D):
 
 
 class ConditionalDecoder(nn.Module):
+    """
+    This decoder requires an input with the same shape of the target. So, if your text content
+    is shorter or longer than the outputs, please re-sampling it before feeding to the decoder.
+
+    Args:
+        in_channels: number of input channels
+        out_channels: number of output channels
+        channels: tuple of channel dimensions
+        dropout: dropout rate
+        attention_head_dim: dimension of attention heads
+        n_blocks: number of transformer blocks
+        num_mid_blocks: number of middle blocks
+        num_heads: number of attention heads
+        act_fn: activation function name
+    """
+
     def __init__(
         self,
         in_channels,
@@ -555,10 +568,6 @@ class ConditionalDecoder(nn.Module):
         num_heads=4,
         act_fn="snake",
     ):
-        """
-        This decoder requires an input with the same shape of the target. So, if your text content
-        is shorter or longer than the outputs, please re-sampling it before feeding to the decoder.
-        """
         super().__init__()
         channels = tuple(channels)
         self.in_channels = in_channels
@@ -749,11 +758,29 @@ class ConditionalDecoder(nn.Module):
 
 
 class CausalConditionalDecoder(ConditionalDecoder):
+    """
+    This decoder requires an input with the same shape of the target. So, if your text content
+    is shorter or longer than the outputs, please re-sampling it before feeding to the decoder.
+
+    Args:
+        in_channels: number of input channels
+        out_channels: number of output channels
+        channels: list of channel dimensions
+        dropout: dropout rate
+        attention_head_dim: dimension of attention heads
+        n_blocks: number of transformer blocks
+        num_mid_blocks: number of middle blocks
+        num_heads: number of attention heads
+        act_fn: activation function name
+        static_chunk_size: size of static chunks
+        num_decoding_left_chunks: number of left chunks for decoding
+    """
+
     def __init__(
         self,
         in_channels=320,
         out_channels=80,
-        channels=[256],
+        channels=[256],  # noqa
         dropout=0.0,
         attention_head_dim=64,
         n_blocks=4,
@@ -763,10 +790,6 @@ class CausalConditionalDecoder(ConditionalDecoder):
         static_chunk_size=50,
         num_decoding_left_chunks=-1,
     ):
-        """
-        This decoder requires an input with the same shape of the target. So, if your text content
-        is shorter or longer than the outputs, please re-sampling it before feeding to the decoder.
-        """
         torch.nn.Module.__init__(self)
         channels = tuple(channels)
         self.in_channels = in_channels

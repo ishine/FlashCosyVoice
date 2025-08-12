@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import torch
 import time
-import s3tokenizer
-from tqdm import tqdm
 from datetime import datetime
+
+import s3tokenizer
+import torch
+from tqdm import tqdm
 
 from flashcosyvoice.config import Config, SamplingParams
 from flashcosyvoice.engine.llm_engine import LLMEngine
@@ -39,11 +40,11 @@ class CosyVoice2(torch.nn.Module):
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
             tqdm.write(f"[{timestamp}] - [INFO] - Casting flow to fp16")
             self.flow.half()
-        self.flow.load_state_dict(torch.load(f"{self.config.model}/flow.pt", map_location="cpu"), strict=True)
+        self.flow.load_state_dict(torch.load(f"{self.config.model}/flow.pt", map_location="cpu", weights_only=True), strict=True)
         self.flow.cuda().eval()
 
         self.hift = HiFTGenerator()
-        hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(f"{self.config.model}/hift.pt", map_location="cpu").items()}
+        hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(f"{self.config.model}/hift.pt", map_location="cpu", weights_only=True).items()}
         self.hift.load_state_dict(hift_state_dict, strict=True)
         self.hift.cuda().eval()
 
@@ -77,8 +78,7 @@ class CosyVoice2(torch.nn.Module):
         for i in range(batch_size):
             speech_tokens_i = prompt_speech_tokens[i, :prompt_speech_tokens_lens[i].item()].tolist()
             valid_prompt_speech_tokens.append(speech_tokens_i)
-            inputs.append([self.config.hf_config.speech_vocab_size] + prompt_text_tokens_for_llm[i] + text_tokens_for_llm[i]
-                           + [self.config.hf_config.speech_vocab_size + 1] + speech_tokens_i)
+            inputs.append([self.config.hf_config.speech_vocab_size] + prompt_text_tokens_for_llm[i] + text_tokens_for_llm[i] + [self.config.hf_config.speech_vocab_size + 1] + speech_tokens_i)
         timing_stats['prepare_llm_inputs'] = time.time() - start_time
 
         # LLM generation

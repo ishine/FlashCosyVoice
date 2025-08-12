@@ -1,15 +1,16 @@
+from typing import List
+
+import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributions.uniform import Uniform
 from torch.nn import Conv1d
 from torch.nn.utils import remove_weight_norm
-import numpy as np
-from torch.distributions.uniform import Uniform
-from typing import List
 
 try:
     from torch.nn.utils.parametrizations import weight_norm
 except ImportError:
-    from torch.nn.utils import weight_norm
+    from torch.nn.utils import weight_norm  # noqa
 
 
 def get_padding(kernel_size, dilation=1):
@@ -48,16 +49,16 @@ class Snake(nn.Module):
         >>> a1 = snake(256)
         >>> x = torch.randn(256)
         >>> x = a1(x)
-    '''
-    def __init__(self, in_features, alpha=1.0, alpha_trainable=True, alpha_logscale=False):
-        '''
-        Initialization.
-        INPUT:
-            - in_features: shape of the input
-            - alpha: trainable parameter
+
+    Args:
+        in_features: shape of the input
+        alpha: trainable parameter
+        alpha_trainable: whether alpha is trainable
+        alpha_logscale: whether to use log scale for alpha
             alpha is initialized to 1 by default, higher values = higher-frequency.
             alpha will be trained along with the rest of your model.
-        '''
+    '''
+    def __init__(self, in_features, alpha=1.0, alpha_trainable=True, alpha_logscale=False):
         super(Snake, self).__init__()
         self.in_features = in_features
 
@@ -92,7 +93,7 @@ class ResBlock(torch.nn.Module):
         self,
         channels: int = 512,
         kernel_size: int = 3,
-        dilations: List[int] = [1, 3, 5],
+        dilations: List[int] = [1, 3, 5],  # noqa
     ):
         super(ResBlock, self).__init__()
         self.convs1 = nn.ModuleList()
@@ -100,7 +101,7 @@ class ResBlock(torch.nn.Module):
 
         for dilation in dilations:
             self.convs1.append(
-                weight_norm(
+                weight_norm(  # noqa
                     Conv1d(
                         channels,
                         channels,
@@ -112,7 +113,7 @@ class ResBlock(torch.nn.Module):
                 )
             )
             self.convs2.append(
-                weight_norm(
+                weight_norm(  # noqa
                     Conv1d(
                         channels,
                         channels,

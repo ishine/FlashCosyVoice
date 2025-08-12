@@ -1,14 +1,16 @@
 import pickle
+from multiprocessing.shared_memory import SharedMemory
+from multiprocessing.synchronize import Event
+
 import torch
 import torch.distributed as dist
-from multiprocessing.synchronize import Event
-from multiprocessing.shared_memory import SharedMemory
 
 from flashcosyvoice.config import Config
 from flashcosyvoice.engine.sequence import Sequence
 from flashcosyvoice.modules.qwen2 import Qwen2ForCausalLM
-from flashcosyvoice.modules.sampler import Sampler, RasSampler
-from flashcosyvoice.utils.context import set_context, get_context, reset_context
+from flashcosyvoice.modules.sampler import RasSampler, Sampler
+from flashcosyvoice.utils.context import (get_context, reset_context,
+                                          set_context)
 from flashcosyvoice.utils.loader import load_model
 
 
@@ -73,7 +75,7 @@ class ModelRunner:
         assert self.world_size > 1 and self.rank
         self.event.wait()
         n = int.from_bytes(self.shm.buf[0:4], "little")
-        method_name, *args = pickle.loads(self.shm.buf[4:n+4])
+        method_name, *args = pickle.loads(self.shm.buf[4:n + 4])
         self.event.clear()
         return method_name, args
 
@@ -82,7 +84,7 @@ class ModelRunner:
         data = pickle.dumps([method_name, *args])
         n = len(data)
         self.shm.buf[0:4] = n.to_bytes(4, "little")
-        self.shm.buf[4:n+4] = data
+        self.shm.buf[4:n + 4] = data
         for event in self.event:
             event.set()
 
@@ -174,7 +176,7 @@ class ModelRunner:
             input_ids.append(seq.last_token)
             positions.append(len(seq))
             context_lens.append(len(seq))
-            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1)
+            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)

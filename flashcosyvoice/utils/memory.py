@@ -1,6 +1,7 @@
 import os
+
 import torch
-from pynvml import *
+from pynvml import *  # noqa
 
 
 def get_gpu_memory():

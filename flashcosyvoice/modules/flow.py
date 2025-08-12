@@ -1,10 +1,13 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
 
-from flashcosyvoice.modules.flow_components.upsample_encoder import UpsampleConformerEncoder, make_pad_mask
-from flashcosyvoice.modules.flow_components.estimator import CausalConditionalDecoder
+from flashcosyvoice.modules.flow_components.estimator import \
+    CausalConditionalDecoder
+from flashcosyvoice.modules.flow_components.upsample_encoder import (
+    UpsampleConformerEncoder, make_pad_mask)
 
 
 # TODO(xcsong): make it configurable

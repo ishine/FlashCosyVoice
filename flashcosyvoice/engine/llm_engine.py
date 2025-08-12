@@ -1,15 +1,15 @@
 import atexit
 from dataclasses import fields
 from time import perf_counter
+
+import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
-import torch.multiprocessing as mp
 
-from flashcosyvoice.config import Config
-from flashcosyvoice.config import SamplingParams
-from flashcosyvoice.engine.sequence import Sequence
-from flashcosyvoice.engine.scheduler import Scheduler
+from flashcosyvoice.config import Config, SamplingParams
 from flashcosyvoice.engine.model_runner import ModelRunner
+from flashcosyvoice.engine.scheduler import Scheduler
+from flashcosyvoice.engine.sequence import Sequence
 
 
 class LLMEngine:

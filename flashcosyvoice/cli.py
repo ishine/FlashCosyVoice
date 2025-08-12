@@ -16,24 +16,24 @@
 
 import argparse
 import json
-import onnxruntime
 import os
+import random
 import sys
-import torch
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import numpy as np
+import onnxruntime
+import s3tokenizer
+import torch
 import torch.distributed as dist
 import torchaudio
 import torchaudio.compliance.kaldi as kaldi
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from tqdm import tqdm
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-import random
-import numpy as np
 
-import s3tokenizer
-
-from flashcosyvoice.config import SamplingParams, CosyVoice2LLMConfig, Config
+from flashcosyvoice.config import Config, CosyVoice2LLMConfig, SamplingParams
 from flashcosyvoice.cosyvoice2 import CosyVoice2
 from flashcosyvoice.utils.audio import mel_spectrogram
 
@@ -269,8 +269,8 @@ def main():
             try:
                 import ttsfrd
                 from cosyvoice_ttsfrd import get_resource_path
-            except ImportError:
-                raise ImportError("ttsfrd is not installed, please install it first, see `https://github.com/xingchensong/CosyVoice-ttsfrd` for installation guide.")
+            except ImportError as e:
+                raise ImportError("ttsfrd is not installed, please install it first, see `https://github.com/xingchensong/CosyVoice-ttsfrd` for installation guide.") from e
             text_norm = ttsfrd.TtsFrontendEngine()
             text_norm.initialize(get_resource_path())
             text_norm.set_lang_type('pinyinvg')

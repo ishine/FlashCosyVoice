@@ -1,7 +1,7 @@
 [flake8]
 # Suggested config from pytorch that we can adapt
 select = B,C,E,F,N,P,T4,W,B9,TOR0,TOR1,TOR2
-max-line-length = 120
+max-line-length = 360
 # C408 ignored because we like the dict keyword argument syntax
 # E501 is not flexible enough, we're using B950 instead
 # N812 ignored because import torch.nn.functional as F is PyTorch convention

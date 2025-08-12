@@ -17,11 +17,7 @@ from transformers import AutoConfig
 
 from flashcosyvoice.config import CosyVoice2LLMConfig
 from flashcosyvoice.modules.qwen2_components.layers import (
-    VocabParallelEmbedding,
-    Qwen2DecoderLayer,
-    RMSNorm,
-    ParallelLMHead,
-)
+    ParallelLMHead, Qwen2DecoderLayer, RMSNorm, VocabParallelEmbedding)
 
 
 class Qwen2Model(nn.Module):
