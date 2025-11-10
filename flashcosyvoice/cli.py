@@ -54,7 +54,11 @@ def save_file_async(
         os.makedirs(os.path.dirname(info['wav']), exist_ok=True)
         if wav is not None:
             wav = wav.cpu()
-            torchaudio.save(info['wav'], wav, 24000)
+            # Support saving both wav and flac
+            if info['wav'].endswith('.flac'):
+                torchaudio.save(info['wav'], wav, 24000, format="flac")
+            else:  # By default, we save it as wav
+                torchaudio.save(info['wav'], wav, 24000)
             duration = wav.shape[-1] / 24000.0
             rtf = ((timing_stats['dataloader_time'] + timing_stats['model_inference_time']) / timing_stats['batch_size']) / duration
             timing_stats['rtf'] = rtf
@@ -63,7 +67,9 @@ def save_file_async(
         info['timing_stats'] = timing_stats
         info['prompt_speech_tokens'] = prompt_speech_tokens
         info['generated_speech_tokens'] = generated_speech_tokens
-        with open(f"{info['wav'].replace('.wav', '.json')}", "w") as f:
+        # Support saving both wav and flac, and make it more flexible
+        json_path = os.path.splitext(info['wav'])[0] + '.json'
+        with open(json_path, "w") as f:
             json.dump(info, f, ensure_ascii=False, indent=4)
         return duration
     except Exception as e:

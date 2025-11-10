@@ -12,11 +12,13 @@ readme = "README.md"
 description = "a lightweight CosyVoice vllm-implementation built from scratch"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "torch>=2.4.0",
+    "torch>=2.4.0,<=2.8.0",
     "triton>=3.0.0",
     "transformers>=4.51.0",  # text tokenizer
     "s3tokenizer",           # audio tokenizer
     "diffusers",             # flow-matching
+    "onnxruntime",
+    "onnxruntime-gpu",
     "flash-attn",            # nano-vllm
     "nvidia-ml-py",          # nano-vllm
     "xxhash",                # nano-vllm
