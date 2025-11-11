@@ -17,7 +17,7 @@ dependencies = [
     "transformers>=4.51.0",  # text tokenizer
     "s3tokenizer",           # audio tokenizer
     "diffusers",             # flow-matching
-    "onnxruntime-gpu",
+    "onnxruntime",
     "flash-attn",            # nano-vllm
     "nvidia-ml-py",          # nano-vllm
     "xxhash",                # nano-vllm
